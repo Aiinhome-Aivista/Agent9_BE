@@ -1,0 +1,107 @@
+version: "3.9"
+
+services:
+
+  # ── Relational Store ─────────────────────────────────────
+  mysql:
+    image: mysql:8.0
+    container_name: aries_mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ariesroot
+      MYSQL_DATABASE: aries_db
+      MYSQL_USER: aries_user
+      MYSQL_PASSWORD: aries_pass
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./init-scripts/mysql_init.sql:/docker-entrypoint-initdb.d/01_init.sql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "aries_user", "-paries_pass"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Graph / Relationship Store ───────────────────────────
+  arangodb:
+    image: arangodb:3.11
+    container_name: aries_arango
+    restart: unless-stopped
+    environment:
+      ARANGO_ROOT_PASSWORD: arangoroot
+    ports:
+      - "8529:8529"
+    volumes:
+      - arango_data:/var/lib/arangodb3
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8529/_api/version"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── AI Vector Store ──────────────────────────────────────
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: aries_chroma
+    restart: unless-stopped
+    environment:
+      IS_PERSISTENT: "TRUE"
+      ANONYMIZED_TELEMETRY: "FALSE"
+    ports:
+      - "8001:8000"
+    volumes:
+      - chroma_data:/chroma/chroma
+
+  # ── FastAPI Backend ──────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: aries_backend
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      MYSQL_URL: mysql+aiomysql://aries_user:aries_pass@mysql:3306/aries_db
+      ARANGO_URL: http://arangodb:8529
+      ARANGO_DB: aries_graph
+      ARANGO_USER: root
+      ARANGO_PASSWORD: arangoroot
+      CHROMA_HOST: chromadb
+      CHROMA_PORT: 8000
+      MISTRAL_API_KEY: ${MISTRAL_API_KEY}
+      MISTRAL_MODEL: mistral-small-latest
+      CORS_ORIGINS: http://localhost:3000,http://frontend:3000
+    depends_on:
+      mysql:
+        condition: service_healthy
+      arangodb:
+        condition: service_healthy
+      chromadb:
+        condition: service_started
+    volumes:
+      - ./backend:/app
+      - policy_docs:/app/uploads
+
+  # ── React + Vite Frontend ────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: aries_frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      VITE_API_URL: http://localhost:8080
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend/src:/app/src
+
+volumes:
+  mysql_data:
+  arango_data:
+  chroma_data:
+  policy_docs:

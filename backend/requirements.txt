@@ -1,0 +1,59 @@
+# # ── FastAPI core ─────────────────────────────────────────
+# fastapi==0.115.6
+# uvicorn[standard]==0.32.1
+# python-multipart==0.0.12
+# python-dotenv==1.0.1
+
+# # ── MySQL (async) ─────────────────────────────────────────
+# sqlalchemy[asyncio]==2.0.36
+# aiomysql==0.2.0
+
+# # ── ArangoDB ─────────────────────────────────────────────
+# python-arango==8.1.4
+
+# # ── ChromaDB ─────────────────────────────────────────────
+# chromadb>=1.5.0 
+# sentence-transformers==3.3.1
+
+# # ── LLM ──────────────────────────────────────────────────
+# mistralai==1.2.5
+
+# # ── CSV / Data ────────────────────────────────────────────
+# pandas==2.2.3
+# openpyxl==3.1.5
+
+# # ── PDF parsing ───────────────────────────────────────────
+# pypdf==5.1.0
+
+# # ── HTTP ─────────────────────────────────────────────────
+# httpx==0.28.1
+
+# # ── Utils ─────────────────────────────────────────────────
+# pydantic==2.10.3
+# pydantic-settings==2.7.0
+# tenacity==9.0.0
+
+
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+
+sqlalchemy==2.0.41
+pymysql==1.1.1
+
+python-dotenv==1.0.1
+pandas==2.2.2
+python-multipart==0.0.9
+sentence-transformers==3.3.1
+pydantic>=2.10.0
+pydantic-settings>=2.6.0
+
+httpx==0.28.1
+
+aiofiles==23.2.1
+apscheduler==3.10.4
+redis==5.0.4
+
+mistralai>=2.4.0
+chromadb>=1.5.0
+python-arango>=8.0.0
+
