@@ -995,6 +995,7 @@ async def create_campaign(payload: CampaignCreate, db: AsyncSession = Depends(ge
     )
     db.add(c)
     await db.flush()
+    await db.refresh(c)
     await _log(db, "Campaign Agent",
                f"Campaign created: '{c.name}' targeting {c.target_count} prospects")
     return c
