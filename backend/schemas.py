@@ -171,6 +171,14 @@ class CampaignCreate(BaseModel):
     prospect_ids:  list[str] = []
     scheduled_at:  Optional[datetime] = None
 
+class PolicyCampaignCreate(BaseModel):
+    policy_id:     str
+    name:          Optional[str] = None
+    description:   Optional[str] = None
+    campaign_type: Optional[str] = "cross_sell"
+    channel:       Optional[str] = "email"
+
+
 class CampaignResponse(BaseModel):
     id:              str
     name:            str

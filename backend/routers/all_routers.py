@@ -51,6 +51,7 @@ from backend.schemas import (
     ProspectAnalysisRequest,
     ProspectAnalysisResponse,
     CampaignCreate,
+    PolicyCampaignCreate,
     CampaignResponse,
     LogResponse,
     DashboardMetrics,
@@ -1012,6 +1013,58 @@ async def create_campaign(payload: CampaignCreate, db: AsyncSession = Depends(ge
     return c
 
 
+@campaign_router.post("/policy-wise", response_model=CampaignResponse)
+async def create_policy_wise_campaign(
+    payload: PolicyCampaignCreate,
+    bg_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db)
+):
+    # 1. Fetch Policy
+    result = await db.execute(select(Policy).where(Policy.id == payload.policy_id))
+    policy = result.scalar_one_or_none()
+    if not policy:
+        raise HTTPException(404, "Policy not found")
+
+    # 2. Query matching prospects
+    q_count = select(func.count(ProspectAudience.id)).where(
+        func.lower(ProspectAudience.recommended_product) == policy.name.lower(),
+        func.lower(ProspectAudience.outreach_channel) == "email",
+        ProspectAudience.email.isnot(None),
+        ProspectAudience.email != ""
+    )
+    target_count = await db.scalar(q_count) or 0
+
+    # 3. Create Campaign record
+    campaign_name = payload.name or f"Campaign for {policy.name}"
+    campaign_desc = payload.description or f"Policy-wise email campaign targeting prospects recommended for {policy.name}"
+    c = Campaign(
+        name          = campaign_name,
+        description   = campaign_desc,
+        campaign_type = payload.campaign_type or "cross_sell",
+        channel       = payload.channel,
+        status        = "active",
+        target_count  = target_count,
+        launched_at   = datetime.utcnow(),
+    )
+    db.add(c)
+    await db.flush()
+    await db.refresh(c)
+    
+    await _log(db, "Campaign Agent",
+               f"Policy-wise campaign '{c.name}' created/launched targeting {c.target_count} prospects", "success")
+
+    # 4. Trigger background outreach
+    if target_count > 0:
+        bg_tasks.add_task(_run_policy_campaign_outreach_bg, c.id, policy.name)
+    else:
+        c.status = "completed"
+        c.completed_at = datetime.utcnow()
+        await db.commit()
+
+    return c
+
+
+
 async def _run_campaign_outreach_bg(campaign_id: str):
     async with AsyncSessionLocal() as db:
         try:
@@ -1080,6 +1133,81 @@ async def _run_campaign_outreach_bg(campaign_id: str):
             await db.commit()
         except Exception as e:
             logger.error(f"Background campaign error: {e}")
+            await db.rollback()
+
+async def _run_policy_campaign_outreach_bg(campaign_id: str, policy_name: str):
+    async with AsyncSessionLocal() as db:
+        try:
+            c = (await db.execute(select(Campaign).where(Campaign.id == campaign_id))).scalar_one_or_none()
+            if not c:
+                return
+
+            prospects = (
+                await db.execute(
+                    select(ProspectAudience)
+                    .where(
+                        func.lower(ProspectAudience.recommended_product) == policy_name.lower(),
+                        func.lower(ProspectAudience.outreach_channel) == "email",
+                        ProspectAudience.email.isnot(None),
+                        ProspectAudience.email != ""
+                    )
+                )
+            ).scalars().all()
+
+            sent_count = 0
+            for p in prospects:
+                try:
+                    msg_text = await llm.draft_outreach_message(
+                        prospect={"name": p.name, "age": p.age, "location": p.location,
+                                  "behavioral_signals": p.behavioral_signals or [],
+                                  "ai_context": p.ai_context or ""},
+                        policy={"name": p.recommended_product or ""},
+                        channel=c.channel,
+                    )
+                    subject = f"Your personalized {p.recommended_product} recommendation"
+                    
+                    # Generate HTML body with tracking
+                    base_url = get_settings().API_BASE_URL.rstrip('/')
+                    open_track_url = f"{base_url}/api/campaigns/track/{c.id}/{p.id}/open"
+                    click_track_url = f"{base_url}/api/campaigns/track/{c.id}/{p.id}/click"
+                    
+                    html_content = f"""
+                    <html>
+                      <body style="font-family: sans-serif; color: #333; line-height: 1.6;">
+                        <p>{msg_text.replace(chr(10), '<br>')}</p>
+                        
+                        <div style="margin-top: 30px; padding: 20px; border: 1px solid #e0e0e0; border-radius: 8px; background-color: #f8f9fa;">
+                          <h3 style="margin-top: 0; color: #2c3e50;">Recommendation Specifically For You</h3>
+                          <p>Based on your profile, we strongly recommend <strong>{p.recommended_product}</strong>.</p>
+                          <a href="{click_track_url}" style="display: inline-block; margin-top: 10px; padding: 12px 24px; background-color: #007bff; color: #ffffff; text-decoration: none; border-radius: 6px; font-weight: bold;">View Your Policy & Claim Now</a>
+                        </div>
+                        
+                        <!-- Invisible Tracking Pixel -->
+                        <img src="{open_track_url}" width="1" height="1" style="display:none;" alt="" />
+                      </body>
+                    </html>
+                    """
+                    
+                    success = await email_service.send_email_async(
+                        to_email=p.email,
+                        subject=subject,
+                        body_text=msg_text,
+                        html_body=html_content
+                    )
+                    
+                    if success:
+                        c.sent_count += 1
+                        await db.commit()
+                        sent_count += 1
+                except Exception as e:
+                    logger.error(f"Error sending to {p.email}: {e}")
+
+            c.status = "completed"
+            c.completed_at = datetime.utcnow()
+            await _log(db, "Campaign Agent", f"Policy-wise campaign '{c.name}' email outreach complete. Sent: {sent_count}.", "success")
+            await db.commit()
+        except Exception as e:
+            logger.error(f"Background policy-wise campaign error: {e}")
             await db.rollback()
 
 @campaign_router.post("/{campaign_id}/launch")
