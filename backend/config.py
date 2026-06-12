@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     # ── Mistral LLM ────────────────────────────────────────
     MISTRAL_API_KEY: str = ""
     MISTRAL_MODEL: str = "mistral-small-latest"
-    MISTRAL_MAX_TOKENS: int = 1024
+    MISTRAL_MAX_TOKENS: int = 4096
     MISTRAL_TEMPERATURE: float = 0.3
 
     # ── App ────────────────────────────────────────────────
@@ -30,6 +30,14 @@ class Settings(BaseSettings):
     APP_VERSION: str = "2.1.0"
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:5173"
     UPLOAD_DIR: str = "./uploads"
+    API_BASE_URL: str = "http://localhost:8000"
+
+    # ── SMTP ───────────────────────────────────────────────
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_FROM: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

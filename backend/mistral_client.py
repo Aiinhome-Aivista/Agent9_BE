@@ -41,12 +41,17 @@ async def _chat(system: str, user: str, json_mode: bool = False) -> str:
         ChatMessage(role="user", content=user),
     ]
 
-    response = client.chat(
-        model=settings.MISTRAL_MODEL,
-        messages=messages,
-        max_tokens=settings.MISTRAL_MAX_TOKENS,
-        temperature=settings.MISTRAL_TEMPERATURE,
-    )
+    kwargs = {
+        "model": settings.MISTRAL_MODEL,
+        "messages": messages,
+        "max_tokens": settings.MISTRAL_MAX_TOKENS,
+        "temperature": settings.MISTRAL_TEMPERATURE,
+    }
+    
+    if json_mode:
+        kwargs["response_format"] = {"type": "json_object"}
+
+    response = client.chat(**kwargs)
 
     content = response.choices[0].message.content or ""
 

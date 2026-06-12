@@ -150,7 +150,7 @@ def index_prospect_context(prospect_id: str, name: str,
 
 
 def search_matching_policies(prospect_signals: list[str],
-                             n_results: int = 5) -> list[dict]:
+                             n_results: int | None = None) -> list[dict]:
     """Semantic search — find best matching policies for a prospect's signals."""
     client = get_chroma()
     embedder = get_embedder()
@@ -158,10 +158,16 @@ def search_matching_policies(prospect_signals: list[str],
 
     query_text = "Customer signals: " + ", ".join(prospect_signals)
     query_embedding = embedder.encode(query_text).tolist()
+    
+    total_docs = col.count()
+    if total_docs == 0:
+        return []
+        
+    fetch_count = min(n_results, total_docs) if n_results is not None else total_docs
 
     results = col.query(
         query_embeddings=[query_embedding],
-        n_results=min(n_results, col.count() or 1),
+        n_results=fetch_count,
         include=["documents", "metadatas", "distances"],
     )
 

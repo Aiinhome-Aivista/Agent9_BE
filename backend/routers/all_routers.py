@@ -21,11 +21,11 @@ import pandas as pd
 # pyrefly: ignore [missing-import]
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, BackgroundTasks
 # pyrefly: ignore [missing-import]
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response, RedirectResponse, HTMLResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, update, desc
 
-from backend.database import get_db
+from backend.database import get_db, AsyncSessionLocal
 
 from backend.models import (
     DataSource,
@@ -59,6 +59,7 @@ from backend.schemas import (
 from backend import mistral_client as llm
 from backend import chroma_client as chroma
 from backend import arango_client as arango
+from backend import email_service
 
 from backend.config import get_settings
 
@@ -837,7 +838,7 @@ async def deep_analyze_prospect(
         raise HTTPException(404, "Prospect not found")
 
     # Semantic match against policies
-    matched = chroma.search_matching_policies(p.behavioral_signals or [], n_results=3)
+    matched = chroma.search_matching_policies(p.behavioral_signals or [], n_results=None)
 
     p_dict = {"id": p.id, "name": p.name, "age": p.age, "location": p.location,
               "income_bracket": p.income_bracket, "behavioral_signals": p.behavioral_signals or [],
@@ -846,6 +847,9 @@ async def deep_analyze_prospect(
     try:
         analysis = await llm.analyze_prospect_deep(p_dict, matched, req.analysis_type)
     except Exception as exc:
+        import traceback
+        traceback.print_exc()
+        logger.error(f"Deep Analysis Error: {str(exc)}")
         raise HTTPException(500, str(exc))
 
     await _log(db, "Prospect Agent",
@@ -985,12 +989,19 @@ async def list_campaigns(db: AsyncSession = Depends(get_db)):
 
 @campaign_router.post("/", response_model=CampaignResponse)
 async def create_campaign(payload: CampaignCreate, db: AsyncSession = Depends(get_db)):
+    target_count = len(payload.prospect_ids)
+    if target_count == 0:
+        q = select(func.count(ProspectAudience.id)).where(
+            ProspectAudience.priority_type == payload.campaign_type
+        )
+        target_count = await db.scalar(q) or 0
+
     c = Campaign(
         name          = payload.name,
         description   = payload.description,
         campaign_type = payload.campaign_type,
         channel       = payload.channel,
-        target_count  = len(payload.prospect_ids),
+        target_count  = target_count,
         scheduled_at  = payload.scheduled_at,
     )
     db.add(c)
@@ -1001,8 +1012,78 @@ async def create_campaign(payload: CampaignCreate, db: AsyncSession = Depends(ge
     return c
 
 
+async def _run_campaign_outreach_bg(campaign_id: str):
+    async with AsyncSessionLocal() as db:
+        try:
+            c = (await db.execute(select(Campaign).where(Campaign.id == campaign_id))).scalar_one_or_none()
+            if not c:
+                return
+
+            prospects = (
+                await db.execute(
+                    select(ProspectAudience)
+                    .where(ProspectAudience.priority_type == c.campaign_type)
+                )
+            ).scalars().all()
+
+            sent_count = 0
+            for p in prospects:
+                if not p.email:
+                    continue
+                try:
+                    msg_text = await llm.draft_outreach_message(
+                        prospect={"name": p.name, "age": p.age, "location": p.location,
+                                  "behavioral_signals": p.behavioral_signals or [],
+                                  "ai_context": p.ai_context or ""},
+                        policy={"name": p.recommended_product or ""},
+                        channel=c.channel,
+                    )
+                    subject = f"Your personalized {c.campaign_type.replace('_', ' ')} recommendation"
+                    
+                    # Generate HTML body with tracking
+                    base_url = get_settings().API_BASE_URL.rstrip('/')
+                    open_track_url = f"{base_url}/api/campaigns/track/{c.id}/{p.id}/open"
+                    click_track_url = f"{base_url}/api/campaigns/track/{c.id}/{p.id}/click"
+                    
+                    html_content = f"""
+                    <html>
+                      <body style="font-family: sans-serif; color: #333; line-height: 1.6;">
+                        <p>{msg_text.replace(chr(10), '<br>')}</p>
+                        
+                        <div style="margin-top: 30px; padding: 20px; border: 1px solid #e0e0e0; border-radius: 8px; background-color: #f8f9fa;">
+                          <h3 style="margin-top: 0; color: #2c3e50;">Recommendation Specifically For You</h3>
+                          <p>Based on your profile, we strongly recommend <strong>{p.recommended_product if p.recommended_product else 'one of our premium tailored policies'}</strong>.</p>
+                          <a href="{click_track_url}" style="display: inline-block; margin-top: 10px; padding: 12px 24px; background-color: #007bff; color: #ffffff; text-decoration: none; border-radius: 6px; font-weight: bold;">View Your Policy & Claim Now</a>
+                        </div>
+                        
+                        <!-- Invisible Tracking Pixel -->
+                        <img src="{open_track_url}" width="1" height="1" style="display:none;" alt="" />
+                      </body>
+                    </html>
+                    """
+                    
+                    success = await email_service.send_email_async(
+                        to_email=p.email,
+                        subject=subject,
+                        body_text=msg_text,
+                        html_body=html_content
+                    )
+                    
+                    if success:
+                        c.sent_count += 1
+                        await db.commit()
+                        sent_count += 1
+                except Exception as e:
+                    logger.error(f"Error sending to {p.email}: {e}")
+
+            await _log(db, "Campaign Agent", f"Campaign '{c.name}' email outreach complete. Sent: {sent_count}.", "success")
+            await db.commit()
+        except Exception as e:
+            logger.error(f"Background campaign error: {e}")
+            await db.rollback()
+
 @campaign_router.post("/{campaign_id}/launch")
-async def launch_campaign(campaign_id: str, db: AsyncSession = Depends(get_db)):
+async def launch_campaign(campaign_id: str, bg_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Campaign).where(Campaign.id == campaign_id))
     c = result.scalar_one_or_none()
     if not c:
@@ -1011,9 +1092,32 @@ async def launch_campaign(campaign_id: str, db: AsyncSession = Depends(get_db)):
     c.launched_at = datetime.utcnow()
     await _log(db, "Campaign Agent",
                f"Campaign launched: '{c.name}' ({c.target_count} prospects)", "success")
+               
+    if c.channel.lower() == "email":
+        bg_tasks.add_task(_run_campaign_outreach_bg, campaign_id)
+        
     return {"status": "active", "launched_at": c.launched_at,
             "campaign_id": campaign_id, "targets": c.target_count}
 
+
+@campaign_router.get("/track/{campaign_id}/{prospect_id}/open")
+async def track_campaign_open(campaign_id: str, prospect_id: str, db: AsyncSession = Depends(get_db)):
+    c = (await db.execute(select(Campaign).where(Campaign.id == campaign_id))).scalar_one_or_none()
+    if c:
+        c.opened_count += 1
+        await db.commit()
+    # 1x1 transparent GIF
+    pixel = b'GIF89a\x01\x00\x01\x00\x80\x00\x00\xff\xff\xff\x00\x00\x00!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;'
+    return Response(content=pixel, media_type="image/gif")
+
+@campaign_router.get("/track/{campaign_id}/{prospect_id}/click")
+async def track_campaign_click(campaign_id: str, prospect_id: str, db: AsyncSession = Depends(get_db)):
+    c = (await db.execute(select(Campaign).where(Campaign.id == campaign_id))).scalar_one_or_none()
+    if c:
+        c.converted_count += 1
+        await db.commit()
+    # Redirect to a dummy success page or returning a message
+    return HTMLResponse("<html><head><style>body{font-family:sans-serif;text-align:center;padding:50px;}</style></head><body><h2>Success!</h2><p>You have successfully claimed your recommended policy.</p></body></html>")
 
 @campaign_router.get("/{campaign_id}/generate-messages")
 async def generate_campaign_messages(
