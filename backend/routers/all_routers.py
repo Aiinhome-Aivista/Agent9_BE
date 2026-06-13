@@ -1013,6 +1013,30 @@ async def create_campaign(payload: CampaignCreate, db: AsyncSession = Depends(ge
     return c
 
 
+@campaign_router.get("/policy-wise-target-count/{policy_id}")
+async def get_policy_wise_target_count(policy_id: str, channel: str | None = None, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Policy).where(Policy.id == policy_id))
+    policy = result.scalar_one_or_none()
+    if not policy:
+        raise HTTPException(404, "Policy not found")
+
+    conditions = [func.lower(ProspectAudience.recommended_product) == policy.name.lower()]
+    
+    if channel:
+        db_channel = "phone" if channel.lower() == "phone call" else channel.lower()
+        conditions.append(func.lower(ProspectAudience.outreach_channel) == db_channel)
+        if channel.lower() in ["email", "linkedin"]:
+            conditions.append(ProspectAudience.email.isnot(None))
+            conditions.append(ProspectAudience.email != "")
+        elif channel.lower() in ["whatsapp", "sms", "phone call"]:
+            conditions.append(ProspectAudience.phone.isnot(None))
+            conditions.append(ProspectAudience.phone != "")
+
+    q_count = select(func.count(ProspectAudience.id)).where(*conditions)
+    target_count = await db.scalar(q_count) or 0
+    return {"policy_id": policy_id, "target_count": target_count}
+
+
 @campaign_router.post("/policy-wise", response_model=CampaignResponse)
 async def create_policy_wise_campaign(
     payload: PolicyCampaignCreate,
@@ -1026,12 +1050,18 @@ async def create_policy_wise_campaign(
         raise HTTPException(404, "Policy not found")
 
     # 2. Query matching prospects
-    q_count = select(func.count(ProspectAudience.id)).where(
-        func.lower(ProspectAudience.recommended_product) == policy.name.lower(),
-        func.lower(ProspectAudience.outreach_channel) == "email",
-        ProspectAudience.email.isnot(None),
-        ProspectAudience.email != ""
-    )
+    conditions = [func.lower(ProspectAudience.recommended_product) == policy.name.lower()]
+    if payload.channel:
+        db_channel = "phone" if payload.channel.lower() == "phone call" else payload.channel.lower()
+        conditions.append(func.lower(ProspectAudience.outreach_channel) == db_channel)
+        if payload.channel.lower() in ["email", "linkedin"]:
+            conditions.append(ProspectAudience.email.isnot(None))
+            conditions.append(ProspectAudience.email != "")
+        elif payload.channel.lower() in ["whatsapp", "sms", "phone call"]:
+            conditions.append(ProspectAudience.phone.isnot(None))
+            conditions.append(ProspectAudience.phone != "")
+
+    q_count = select(func.count(ProspectAudience.id)).where(*conditions)
     target_count = await db.scalar(q_count) or 0
 
     # 3. Create Campaign record
@@ -1142,20 +1172,32 @@ async def _run_policy_campaign_outreach_bg(campaign_id: str, policy_name: str):
             if not c:
                 return
 
+            conditions = [func.lower(ProspectAudience.recommended_product) == policy_name.lower()]
+            if c.channel:
+                db_channel = "phone" if c.channel.lower() == "phone call" else c.channel.lower()
+                conditions.append(func.lower(ProspectAudience.outreach_channel) == db_channel)
+                if c.channel.lower() in ["email", "linkedin"]:
+                    conditions.append(ProspectAudience.email.isnot(None))
+                    conditions.append(ProspectAudience.email != "")
+                elif c.channel.lower() in ["whatsapp", "sms", "phone call"]:
+                    conditions.append(ProspectAudience.phone.isnot(None))
+                    conditions.append(ProspectAudience.phone != "")
+
             prospects = (
                 await db.execute(
                     select(ProspectAudience)
-                    .where(
-                        func.lower(ProspectAudience.recommended_product) == policy_name.lower(),
-                        func.lower(ProspectAudience.outreach_channel) == "email",
-                        ProspectAudience.email.isnot(None),
-                        ProspectAudience.email != ""
-                    )
+                    .where(*conditions)
                 )
             ).scalars().all()
 
             sent_count = 0
             for p in prospects:
+                if c.channel and c.channel.lower() in ["email", "linkedin"]:
+                    if not p.email:
+                        continue
+                elif c.channel and c.channel.lower() in ["whatsapp", "sms", "phone call"]:
+                    if not p.phone:
+                        continue
                 try:
                     msg_text = await llm.draft_outreach_message(
                         prospect={"name": p.name, "age": p.age, "location": p.location,
