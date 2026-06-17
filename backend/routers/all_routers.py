@@ -1066,30 +1066,22 @@ async def create_policy_wise_campaign(
 
     # 3. Create Campaign record
     campaign_name = payload.name or f"Campaign for {policy.name}"
-    campaign_desc = payload.description or f"Policy-wise email campaign targeting prospects recommended for {policy.name}"
+    base_desc = payload.description or f"Policy-wise email campaign targeting prospects recommended for {policy.name}"
+    campaign_desc = f"[Policy: {policy.name}] {base_desc}"
     c = Campaign(
         name          = campaign_name,
         description   = campaign_desc,
         campaign_type = payload.campaign_type or "cross_sell",
         channel       = payload.channel,
-        status        = "active",
+        status        = "draft",
         target_count  = target_count,
-        launched_at   = datetime.utcnow(),
     )
     db.add(c)
     await db.flush()
     await db.refresh(c)
     
     await _log(db, "Campaign Agent",
-               f"Policy-wise campaign '{c.name}' created/launched targeting {c.target_count} prospects", "success")
-
-    # 4. Trigger background outreach
-    if target_count > 0:
-        bg_tasks.add_task(_run_policy_campaign_outreach_bg, c.id, policy.name)
-    else:
-        c.status = "completed"
-        c.completed_at = datetime.utcnow()
-        await db.commit()
+               f"Policy-wise campaign '{c.name}' created as draft targeting {c.target_count} prospects", "success")
 
     return c
 
@@ -1244,8 +1236,6 @@ async def _run_policy_campaign_outreach_bg(campaign_id: str, policy_name: str):
                 except Exception as e:
                     logger.error(f"Error sending to {p.email}: {e}")
 
-            c.status = "completed"
-            c.completed_at = datetime.utcnow()
             await _log(db, "Campaign Agent", f"Policy-wise campaign '{c.name}' email outreach complete. Sent: {sent_count}.", "success")
             await db.commit()
         except Exception as e:
@@ -1263,7 +1253,15 @@ async def launch_campaign(campaign_id: str, bg_tasks: BackgroundTasks, db: Async
     await _log(db, "Campaign Agent",
                f"Campaign launched: '{c.name}' ({c.target_count} prospects)", "success")
                
-    if c.channel.lower() == "email":
+    policy_name = None
+    if c.description and c.description.startswith("[Policy: "):
+        end_idx = c.description.find("]")
+        if end_idx != -1:
+            policy_name = c.description[9:end_idx]
+            
+    if policy_name:
+        bg_tasks.add_task(_run_policy_campaign_outreach_bg, campaign_id, policy_name)
+    elif c.channel.lower() == "email":
         bg_tasks.add_task(_run_campaign_outreach_bg, campaign_id)
         
     return {"status": "active", "launched_at": c.launched_at,
