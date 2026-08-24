@@ -3,7 +3,7 @@ from functools import lru_cache
 
 
 class Settings(BaseSettings):
-    # ── MySQL ──────────────────────────────────────────────
+    # ── MySQL ───Url───────────────────────────────────────────
     MYSQL_URL: str = "mysql+aiomysql://aries_user:aries_pass@localhost:3306/aries_db"
 
     # ── ArangoDB ──────────────────────────────────────────
