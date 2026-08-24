@@ -193,7 +193,7 @@ def get_knowledge_graph_data() -> dict:
             "edge_count":     sum(db.collection(c).count() for c in EDGE_COLLECTIONS),
         },
     }
-
+#...
 
 def _make_key(text: str) -> str:
     """Generate a safe ArangoDB key from any string."""
