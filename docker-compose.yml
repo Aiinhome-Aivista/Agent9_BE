@@ -68,10 +68,14 @@ services:
       ARANGO_DB: aries_graph
       ARANGO_USER: root
       ARANGO_PASSWORD: arangoroot
+      ARANGO_TIMEOUT: ${ARANGO_TIMEOUT}
       CHROMA_HOST: chromadb
       CHROMA_PORT: 8000
       MISTRAL_API_KEY: ${MISTRAL_API_KEY}
-      MISTRAL_MODEL: mistral-small-latest
+      MISTRAL_MODEL: ${MISTRAL_MODEL}
+      MISTRAL_LOCAL_URL: ${MISTRAL_LOCAL_URL}
+      MISTRAL_LOCAL_MODEL: ${MISTRAL_LOCAL_MODEL}
+      MISTRAL_TIMEOUT: ${MISTRAL_TIMEOUT}
       CORS_ORIGINS: http://localhost:3000,http://frontend:3000
     depends_on:
       mysql:

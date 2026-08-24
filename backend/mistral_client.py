@@ -27,7 +27,17 @@ _client: MistralClient | None = None
 def get_mistral() -> MistralClient:
     global _client
     if _client is None:
-        _client = MistralClient(api_key=settings.MISTRAL_API_KEY)
+        if settings.MISTRAL_LOCAL_URL:
+            _client = MistralClient(
+                api_key=settings.MISTRAL_API_KEY or "dummy",
+                endpoint=settings.MISTRAL_LOCAL_URL,
+                timeout=settings.MISTRAL_TIMEOUT
+            )
+        else:
+            _client = MistralClient(
+                api_key=settings.MISTRAL_API_KEY,
+                timeout=settings.MISTRAL_TIMEOUT
+            )
     return _client
 
 
@@ -41,8 +51,9 @@ async def _chat(system: str, user: str, json_mode: bool = False) -> str:
         ChatMessage(role="user", content=user),
     ]
 
+    model = settings.MISTRAL_LOCAL_MODEL if (settings.MISTRAL_LOCAL_URL and settings.MISTRAL_LOCAL_MODEL) else settings.MISTRAL_MODEL
     kwargs = {
-        "model": settings.MISTRAL_MODEL,
+        "model": model,
         "messages": messages,
         "max_tokens": settings.MISTRAL_MAX_TOKENS,
         "temperature": settings.MISTRAL_TEMPERATURE,

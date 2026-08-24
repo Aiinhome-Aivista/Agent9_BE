@@ -37,7 +37,7 @@ def init_arango() -> None:
     """Connect to ArangoDB and ensure collections exist."""
     global _db
     try:
-        client = ArangoClient(hosts=settings.ARANGO_URL)
+        client = ArangoClient(hosts=settings.ARANGO_URL, request_timeout=settings.ARANGO_TIMEOUT)
         sys_db = client.db("_system", username=settings.ARANGO_USER,
                            password=settings.ARANGO_PASSWORD)
 

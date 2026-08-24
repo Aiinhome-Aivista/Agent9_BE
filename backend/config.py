@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     ARANGO_DB: str = "aries_graph"
     ARANGO_USER: str = "root"
     ARANGO_PASSWORD: str = "arangoroot"
+    ARANGO_TIMEOUT: int = 5
 
     # ── ChromaDB ──────────────────────────────────────────
     CHROMA_HOST: str = "localhost"
@@ -22,8 +23,11 @@ class Settings(BaseSettings):
     # ── Mistral LLM ────────────────────────────────────────
     MISTRAL_API_KEY: str = ""
     MISTRAL_MODEL: str = "mistral-small-latest"
+    MISTRAL_LOCAL_URL: str = ""
+    MISTRAL_LOCAL_MODEL: str = ""
     MISTRAL_MAX_TOKENS: int = 4096
     MISTRAL_TEMPERATURE: float = 0.3
+    MISTRAL_TIMEOUT: int = 300
 
     # ── App ────────────────────────────────────────────────
     APP_TITLE: str = "ARIES API"
