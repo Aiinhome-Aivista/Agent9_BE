@@ -6,6 +6,7 @@ Collections:
   prospect_contexts  Prospect behaviour text → embeddings (matching)
 """
 
+import os
 import chromadb
 from chromadb.config import Settings as ChromaSettings
 from sentence_transformers import SentenceTransformer
@@ -14,7 +15,6 @@ import logging
 
 logger = logging.getLogger("aries.chroma")
 settings = get_settings()
-print("MISTRAL KEY:", settings.MISTRAL_API_KEY)
 from typing import Optional
 
 _client = None
@@ -82,8 +82,13 @@ def init_chroma() -> None:
                 metadata={"hnsw:space": "cosine"},
             )
 
+        model_path = os.getenv(
+            "EMBEDDING_MODEL",
+            "/opt/models/all-MiniLM-L6-v2",
+        )
         _embedder = SentenceTransformer(
-            settings.EMBEDDING_MODEL
+            model_path,
+            local_files_only=True,
         )
 
         logger.info(
@@ -93,7 +98,7 @@ def init_chroma() -> None:
 
         logger.info(
             "Embedding model '%s' loaded.",
-            settings.EMBEDDING_MODEL
+            model_path
         )
 
     except Exception as exc:

@@ -103,6 +103,12 @@ async def get_metrics(db: AsyncSession = Depends(get_db)):
     )
 
 
+@dashboard_router.get("/tokens")
+async def get_token_usage_stats():
+    """Get current cumulative token usage metrics across all LLM calls."""
+    return llm.get_token_usage()
+
+
 # ════════════════════════════════════════════════════════════
 #  CONNECTOR AGENT
 # ════════════════════════════════════════════════════════════

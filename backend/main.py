@@ -31,7 +31,6 @@ logging.basicConfig(
 )
 logger   = logging.getLogger("aries.main")
 settings = get_settings()
-print("MISTRAL KEY:", settings.MISTRAL_API_KEY)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

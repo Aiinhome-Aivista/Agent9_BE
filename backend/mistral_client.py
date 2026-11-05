@@ -13,6 +13,7 @@ All AI-powered features use Mistral Small Latest:
 import json
 import re
 import logging
+import threading
 # from mistralai import Mistral
 from mistralai.client import MistralClient
 from mistralai.models.chat_completion import ChatMessage
@@ -22,6 +23,73 @@ logger = logging.getLogger("aries.mistral")
 settings = get_settings()
 
 _client: MistralClient | None = None
+
+
+class TokenTracker:
+    """Thread-safe Token Tracker for monitoring input, output, and cumulative tokens."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.total_input_tokens: int = 0
+        self.total_output_tokens: int = 0
+        self.total_tokens: int = 0
+        self.total_calls: int = 0
+
+    def record_usage(self, prompt_tokens: int, completion_tokens: int, total_tokens: int | None = None, model: str = ""):
+        if total_tokens is None or total_tokens == 0:
+            total_tokens = prompt_tokens + completion_tokens
+
+        with self._lock:
+            self.total_calls += 1
+            self.total_input_tokens += prompt_tokens
+            self.total_output_tokens += completion_tokens
+            self.total_tokens += total_tokens
+
+            # Format and print clean report to the terminal (ASCII safe for all terminals)
+            border = "=" * 65
+            sub_border = "-" * 65
+            print(f"\n{border}", flush=True)
+            print(f" [LLM TOKEN USAGE REPORT]  (Model: {model or 'Mistral'})", flush=True)
+            print(border, flush=True)
+            print(f" >> Current Request (Call #{self.total_calls}):", flush=True)
+            print(f"    * Input Tokens (Prompt)       : {prompt_tokens:,}", flush=True)
+            print(f"    * Output Tokens (Completion)  : {completion_tokens:,}", flush=True)
+            print(f"    * Request Total Tokens        : {total_tokens:,}", flush=True)
+            print(sub_border, flush=True)
+            print(f" >> Cumulative Project Total ({self.total_calls} calls so far):", flush=True)
+            print(f"    * Total Input Tokens          : {self.total_input_tokens:,}", flush=True)
+            print(f"    * Total Output Tokens         : {self.total_output_tokens:,}", flush=True)
+            print(f"    * Grand Total Tokens Used     : {self.total_tokens:,}", flush=True)
+            print(f"{border}\n", flush=True)
+
+    def get_stats(self) -> dict:
+        with self._lock:
+            return {
+                "total_input_tokens": self.total_input_tokens,
+                "total_output_tokens": self.total_output_tokens,
+                "total_tokens": self.total_tokens,
+                "total_calls": self.total_calls,
+        }
+
+    def reset_stats(self):
+        with self._lock:
+            self.total_input_tokens = 0
+            self.total_output_tokens = 0
+            self.total_tokens = 0
+            self.total_calls = 0
+
+
+token_tracker = TokenTracker()
+
+
+def get_token_usage() -> dict:
+    """Get current cumulative token usage stats."""
+    return token_tracker.get_stats()
+
+
+def reset_token_usage():
+    """Reset token usage stats."""
+    token_tracker.reset_stats()
 
 
 def get_mistral() -> MistralClient:
@@ -63,6 +131,25 @@ async def _chat(system: str, user: str, json_mode: bool = False) -> str:
         kwargs["response_format"] = {"type": "json_object"}
 
     response = client.chat(**kwargs)
+
+    # Extract & record token usage
+    try:
+        usage = getattr(response, "usage", None)
+        if usage:
+            prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
+            completion_tokens = getattr(usage, "completion_tokens", 0) or 0
+            call_total = getattr(usage, "total_tokens", prompt_tokens + completion_tokens) or (prompt_tokens + completion_tokens)
+            token_tracker.record_usage(prompt_tokens, completion_tokens, call_total, model=model)
+        elif isinstance(response, dict) and "usage" in response:
+            u = response["usage"]
+            prompt_tokens = u.get("prompt_tokens", 0) or 0
+            completion_tokens = u.get("completion_tokens", 0) or 0
+            call_total = u.get("total_tokens", prompt_tokens + completion_tokens) or (prompt_tokens + completion_tokens)
+            token_tracker.record_usage(prompt_tokens, completion_tokens, call_total, model=model)
+        else:
+            logger.debug("No usage info found in LLM response")
+    except Exception as exc:
+        logger.warning("Failed to record token usage: %s", exc)
 
     content = response.choices[0].message.content or ""
 
@@ -302,3 +389,40 @@ Keep it concise: email ≤150 words, WhatsApp/SMS ≤60 words, phone script ≤1
         f"Context: {prospect.get('ai_context', '')}"
     )
     return await _chat(system, user)
+def upsert_prospect_vertex(prospect_id: str, name: str, signals: list[str],
+                           recommended_policy_id: str | None = None) -> str:
+    db = get_arango_db()
+    key = f"prospect_{prospect_id.replace('-', '_')}"
+    col = db.collection("prospect_nodes")
+
+    if col.has(key):
+        col.update({"_key": key, "name": name})
+    else:
+        col.insert({"_key": key, "id": prospect_id, "name": name})
+
+    sig_col  = db.collection("signal_nodes")
+    edge_col = db.collection("prospect_signals")
+    for signal in signals:
+        sig_key = _make_key(signal)
+        if not sig_col.has(sig_key):
+            sig_col.insert({"_key": sig_key, "label": signal})
+        edge_key = f"{key}_{sig_key}"
+        if not edge_col.has(edge_key):
+            edge_col.insert({
+                "_key":  edge_key,
+                "_from": f"prospect_nodes/{key}",
+                "_to":   f"signal_nodes/{sig_key}",
+            })
+
+    if recommended_policy_id:
+        rec_col  = db.collection("recommendations")
+        pol_key  = f"policy_{recommended_policy_id.replace('-', '_')}"
+        rec_edge = f"rec_{key}_{pol_key}"
+        if not rec_col.has(rec_edge):
+            rec_col.insert({
+                "_key":  rec_edge,
+                "_from": f"prospect_nodes/{key}",
+                "_to":   f"policies/{pol_key}",
+            })
+
+    return f"prospect_nodes/{key}"
